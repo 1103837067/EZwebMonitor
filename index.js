@@ -1,39 +1,43 @@
 /**
- * EZwebMonitor (PerfDog-style Jank) - reloadable
- * - 把初始化封装为 window.__EZwebMonitorBootstrap()
- * - 暴露 window.__perfOverlay.reload() 以便无需改 URL 即可重建（适用于模块被 import 缓存的场景）
+ * EZwebMonitor (PerfDog-style Jank) - reloadable + mobile-friendly + drag fix
  *
- * Load:
- * import("https://cdn.jsdelivr.net/gh/1103837067/EZwebMonitor/index.js");
+ * 功能：
+ * - FPS/Memory 双图、深色可拖拽（Pointer Events，触屏/鼠标通吃）
+ * - R/S 采样切换（每帧 / 1Hz）
+ * - 5s/10s/15s 窗口切换（仅保留当前窗口数据）
+ * - CSV 录制导出（含 jank,big_jank,delta_ms），移动端：优先 Web Share -> 下载 -> 复制兜底
+ * - 动态纵轴 ±10% + 平滑过渡
+ * - PerfDog 风格 jank/big-jank（前3帧均值×2 + 电影帧倍数阈值）
+ * - FPS 图黄/红框标注 jank/big-jank；J/BJ 统计显示在 FPS 面板统计行
+ * - 修复：按钮/画布点击不会触发拖动（仅 header 空白处可拖）
  *
- * After load you can:
- * window.__perfOverlay.reload(); // 强制重新构建 overlay（无须再次 import）
+ * 加载：
+ *   import("https://cdn.jsdelivr.net/gh/1103837067/EZwebMonitor/index.js");
+ *
+ * 重新构建（无需再次 import）：
+ *   window.__perfOverlay.reload();
+ *   // 或
+ *   window.__EZwebMonitorBootstrap();
  */
 
 (function defineBootstrap() {
-  // 如果已经存在 bootstrap 函数，直接调用它（第一次 import 会执行下面定义）
-  // 但注意：如果模块被缓存，后续 import(...) 不会重新执行此脚本，故请在控制台调用 window.__perfOverlay.reload()。
   if (window.__EZwebMonitorBootstrap) {
     try { window.__EZwebMonitorBootstrap(); } catch(e){ console.warn("EZwebMonitor.reload failed", e); }
     return;
   }
 
-  // ---- 主构建函数 ----
   function bootstrap() {
-    // 如果已有实例，先移除（确保复建时干净）
     if (window.__fpsOverlayInstalled) {
-      try { window.__perfOverlay?.remove?.(); } catch (e) { /* ignore */ }
+      try { window.__perfOverlay?.remove?.(); } catch (e) {}
     }
-
-    // 标记已安装（覆盖旧的标志）
     window.__fpsOverlayInstalled = true;
 
     // ---------------- CONFIG ----------------
     const WIDTH=340, HEADER_H=36, HEIGHT=218, PLOT_H=HEIGHT-HEADER_H;
     const BG="rgba(0,0,0,0.82)", GRID="rgba(255,255,255,0.08)", TEXT="#fff";
     const C_FPS="rgba(0,200,120,0.95)", C_MEM="rgba(0,120,255,0.95)";
-    const COLOR_JANK="#ffd60a"; // yellow
-    const COLOR_BIG ="#ff3b30"; // red
+    const COLOR_JANK="#ffd60a"; // 小卡顿：黄
+    const COLOR_BIG ="#ff3b30"; // 大卡顿：红
 
     const WINDOW_OPTS=[5000,10000,15000]; // 5s/10s/15s
     let windowIdx=0, windowMs=WINDOW_OPTS[windowIdx];
@@ -49,9 +53,9 @@
     const MOVIE_FT = 1000/24;   // ~41.67ms
     const J_MOVIE  = 2 * MOVIE_FT;   // ~83.33ms
     const BJ_MOVIE = 3 * MOVIE_FT;   // 125ms
-    const IGNORE_DELTA_GT_MS = 2000; // avoid false positives (tab hidden / suspend)
+    const IGNORE_DELTA_GT_MS = 2000; // 避免后台/挂起假阳性
 
-    // keep last 3 frame intervals
+    // 维护最近3帧的间隔
     const last3 = []; // ms
 
     // ---------------- DOM ----------------
@@ -66,10 +70,13 @@
 
     const header=document.createElement("div");
     Object.assign(header.style,{
-      display:"grid",gridTemplateColumns:"1fr auto auto auto auto",
+      display:"grid",
+      gridTemplateColumns:"1fr auto auto auto auto",
       alignItems:"center",gap:"6px",padding:"6px 8px",
       background:BG,borderBottom:"1px solid rgba(255,255,255,0.06)",
-      fontSize:"11px",cursor:"move",height:HEADER_H+"px",boxSizing:"border-box"
+      fontSize:"11px",
+      height:HEADER_H+"px",boxSizing:"border-box",
+      touchAction:"none", cursor:"grab" // Pointer Events & 抓手光标
     });
 
     const info=document.createElement("div");
@@ -93,7 +100,9 @@
 
     rateBtn.onclick=(e)=>{ e.stopPropagation(); realtime=!realtime; rateBtn.textContent=realtime?"R":"S"; if(realtime){loopRAF();}else{loopInterval();} };
     windowBtn.onclick=(e)=>{ e.stopPropagation(); windowIdx=(windowIdx+1)%WINDOW_OPTS.length; windowMs=WINDOW_OPTS[windowIdx]; windowBtn.textContent=`${windowMs/1000}s`; };
-    recBtn.onclick=(e)=>{
+
+    // —— 移动端友好导出：包装为 async —— //
+    recBtn.onclick=async (e)=>{
       e.stopPropagation();
       if(!recording){
         recording=true; recorded=[]; recordStart=performance.now();
@@ -101,40 +110,59 @@
       }else{
         recording=false; recBtn.textContent="开始"; recBtn.style.background="rgba(0,170,255,0.22)";
         const csv=buildCSV(recorded,recordStart);
-        const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
-        const a=document.createElement("a");
         const ts=new Date().toISOString().replace(/[:.]/g,'-');
-        a.download=`perf_${ts}.csv`; a.href=URL.createObjectURL(blob);
-        document.body.appendChild(a); a.click();
-        setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();},1000);
+        await downloadCSVMobileFriendly(`perf_${ts}.csv`, csv);
       }
     };
-    // close behavior: full cleanup
-    closeBtn.onclick=()=>{ cleanup(); };
 
-    header.appendChild(info); header.appendChild(rateBtn); header.appendChild(windowBtn); header.appendChild(recBtn); header.appendChild(closeBtn);
+    closeBtn.onclick=()=>{ cleanup(); };
 
     const canvas=document.createElement("canvas");
     canvas.width=WIDTH*devicePixelRatio; canvas.height=PLOT_H*devicePixelRatio;
     canvas.style.width=WIDTH+"px"; canvas.style.height=PLOT_H+"px";
     const ctx=canvas.getContext("2d"); ctx.scale(devicePixelRatio,devicePixelRatio);
 
+    // 组装 DOM
+    header.appendChild(info); header.appendChild(rateBtn); header.appendChild(windowBtn); header.appendChild(recBtn); header.appendChild(closeBtn);
     box.appendChild(header); box.appendChild(canvas); document.body.appendChild(box);
 
-    // Drag
-    (function(){
+    // ---- 给交互元素加“防拖动护航”（阻止 pointer 事件冒泡到 header）----
+    function shieldFromDrag(el){
+      el.addEventListener("pointerdown", e => { e.stopPropagation(); }, { passive:true });
+      el.addEventListener("pointermove", e => { e.stopPropagation(); }, { passive:true });
+    }
+    [rateBtn, windowBtn, recBtn, closeBtn, canvas].forEach(shieldFromDrag);
+
+    // ---------------- Drag：Pointer Events（仅 header 空白区域可拖） ----------------
+    (function enableDrag(){
       let dragging=false,sx=0,sy=0,ox=0,oy=0;
-      header.addEventListener("mousedown",e=>{
-        dragging=true; sx=e.clientX; sy=e.clientY;
+
+      header.addEventListener("pointerdown",(e)=>{
+        // 点击到按钮或 canvas 时不启动拖拽（仅 header 空白处可拖）
+        if (e.target.closest("button") || e.target === canvas) return;
+        // 只响应主键
+        if (e.button !== undefined && e.button !== 0) return;
+
+        dragging=true;
+        header.setPointerCapture?.(e.pointerId);
+        sx=e.clientX; sy=e.clientY;
         const r=box.getBoundingClientRect(); ox=r.left; oy=r.top;
         document.body.style.userSelect="none";
+        header.style.cursor="grabbing";
       });
-      window.addEventListener("mousemove",e=>{
+
+      window.addEventListener("pointermove",(e)=>{
         if(!dragging) return;
         const dx=e.clientX-sx, dy=e.clientY-sy;
         box.style.left=(ox+dx)+"px"; box.style.top=(oy+dy)+"px"; box.style.right="auto";
+        e.preventDefault?.(); // 阻止页面随手指滚动
+      }, { passive:false });
+
+      window.addEventListener("pointerup",()=>{
+        dragging=false;
+        document.body.style.userSelect="";
+        header.style.cursor="grab";
       });
-      window.addEventListener("mouseup",()=>{ dragging=false; document.body.style.userSelect=""; });
     })();
 
     // ---------------- DATA ----------------
@@ -147,7 +175,7 @@
 
     function pushPoint(arr,t,v){
       arr.push({t,v});
-      const cutoff=t - windowMs; // only keep current window
+      const cutoff=t - windowMs;
       while(arr.length && arr[0].t < cutoff) arr.shift();
     }
     function pushJank(t, gap, type){
@@ -161,11 +189,11 @@
       if (document.hidden || deltaMs > IGNORE_DELTA_GT_MS) return null;
       const prevAvg = last3.length ? (last3.reduce((a,b)=>a+b,0)/last3.length) : null;
 
-      // update last3 for next frame
+      // 更新 last3 给下一帧
       last3.push(deltaMs);
       if (last3.length > 3) last3.shift();
 
-      if (prevAvg == null) return null; // need history
+      if (prevAvg == null) return null; // 需要历史
       const condA = deltaMs > 2 * prevAvg;
       const condJ = deltaMs > J_MOVIE;
       const condBJ= deltaMs > BJ_MOVIE;
@@ -227,6 +255,54 @@
       return lines.join("\n");
     }
 
+    // ---- 下载/分享 CSV（移动端友好）----
+    async function downloadCSVMobileFriendly(fileName, csvText) {
+      const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
+
+      // 1) Web Share API (with files): Android Chrome / iOS 16+ Safari
+      const canFileShare = !!(navigator.canShare && window.File && window.Blob);
+      if (canFileShare) {
+        try {
+          const file = new File([csvText], fileName, { type: "text/csv" });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: fileName, text: "性能数据 CSV" });
+            console.log("[EZwebMonitor] 已通过系统分享导出 CSV。");
+            return;
+          }
+        } catch (e) {
+          console.warn("[EZwebMonitor] Web Share 文件分享失败，转入下一步。", e);
+        }
+      }
+
+      // 2) 传统下载
+      try {
+        const a = document.createElement("a");
+        a.download = fileName;
+        a.href = URL.createObjectURL(blob);
+        a.rel = "noopener";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+        console.log("[EZwebMonitor] 已触发浏览器下载。移动端通常保存在“下载”或“文件”。");
+        return;
+      } catch (e) {
+        console.warn("[EZwebMonitor] a[download] 下载失败，转入下一步。", e);
+      }
+
+      // 3) 兜底：复制到剪贴板
+      try {
+        await navigator.clipboard.writeText(csvText);
+        alert("已将 CSV 文本复制到剪贴板。\n若下载无响应，可粘贴到备忘录/文件并保存为 .csv。");
+        console.log("[EZwebMonitor] 已复制 CSV 到剪贴板。");
+        return;
+      } catch (e) {
+        console.warn("[EZwebMonitor] 复制失败。请手动在控制台复制。", e);
+        console.log("CSV START >>>\n" + csvText + "\n<<< CSV END");
+        alert("下载/分享/复制均未成功。\n已在控制台打印 CSV，请手动复制保存。");
+      }
+    }
+
     // Smooth axis ranges
     const smoothRange={ FPS:{min:0,max:120}, MEM:{min:0,max:500} };
 
@@ -236,7 +312,7 @@
       ctx.clearRect(0,0,w,h);
       ctx.fillStyle=BG; ctx.fillRect(0,0,w,h);
 
-      drawPanel(0, fpsPts, "FPS", C_FPS, smoothRange.FPS, jankEvents, true); // FPS 带 jank 标注与统计文本含 J/BJ
+      drawPanel(0, fpsPts, "FPS", C_FPS, smoothRange.FPS, jankEvents, true); // FPS 带 jank 标注 + 统计 J/BJ
       drawPanel(1, memPts, "内存(MB)", C_MEM, smoothRange.MEM, null, false);
     }
 
@@ -295,10 +371,9 @@
       });
       ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();
 
-      // stats text
+      // stats text（FPS 面板追加 J/BJ 统计）
       const a=avg(vals), mx=max(vals), mn=min(vals);
       ctx.fillStyle="rgba(255,255,255,0.7)";
-
       let suffix = "";
       if (showJankCounts && janks){
         let jc=0, bjc=0;
@@ -314,7 +389,7 @@
         janks.forEach(ev=>{
           if (ev.t < tStart || ev.t > tEnd) return;
 
-          // nearest point value
+          // 最近点的 y 值
           let v = null;
           for (let i=points.length-1;i>=0;i--){
             if (Math.abs(points[i].t - ev.t) <= (span/points.length + 5)) { v = points[i].v; break; }
@@ -350,20 +425,14 @@
 
     // ---------------- CLEANUP ----------------
     function cleanup(){
-      // stop loops
       cancelAnimationFrame(rafId);
       clearInterval(timerId);
-      // remove DOM
       try{ box.remove(); }catch(e){}
-      // clear globals this bootstrap set
       try { delete window.__perfOverlay; } catch(e){}
-      try { delete window.__EZwebMonitorBootstrap; } catch(e){}
-      // mark not installed
-      try { window.__fpsOverlayInstalled = false; } catch(e){}
+      window.__fpsOverlayInstalled = false; // 关闭后可再次 bootstrap
     }
 
     // ---------------- API ----------------
-    // expose API; include reload which calls bootstrap again
     window.__perfOverlay = {
       remove(){ cleanup(); },
       toggleRate(){ rateBtn.click(); },
@@ -371,17 +440,14 @@
       start(){ if(!recording) recBtn.click(); },
       stopAndDownload(){ if(recording) recBtn.click(); },
       getJankConfig(){ return { MOVIE_FT, J_MOVIE, BJ_MOVIE, IGNORE_DELTA_GT_MS }; },
-      // reload will rebuild (cleanup + bootstrap)
       reload(){ cleanup(); setTimeout(()=>{ try{ bootstrap(); }catch(e){ console.warn(e); } }, 50); }
     };
 
-    // also expose bootstrap for manual use
     window.__EZwebMonitorBootstrap = bootstrap;
 
-    console.log("Overlay ready: PerfDog-style jank; call window.__perfOverlay.reload() to rebuild.");
+    console.log("Overlay ready: PerfDog-style jank + mobile-friendly + drag-fix. 用 window.__perfOverlay.reload() 可重建。");
   } // end bootstrap
 
-  // bind and call bootstrap immediately on first import
   window.__EZwebMonitorBootstrap = bootstrap;
   try { bootstrap(); } catch(e){ console.error("EZwebMonitor bootstrap error", e); }
 
