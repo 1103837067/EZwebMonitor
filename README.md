@@ -1,4 +1,6 @@
 # EZwebMonitor
+![img](docs/image.png) 
+
 极简的 FPS + 内存 实时监控悬浮层（深色、可拖拽）。
 支持 R/S 采样切换、5s/10s/15s 窗口切换、CSV 记录导出、动态纵轴（±10%）、平滑缩放动画、Hover 提示，关闭后完全清理不留痕。
 
@@ -51,6 +53,7 @@ window.__EZwebMonitorBootstrap()
 若浏览器不支持，会自动切换为下载或复制到剪贴板。
 ---
 ### 📊 Jank 检测算法（PerfDog 风格）
+![img](docs/jnk.png) 
 
 定义基于连续帧耗时（delta_ms = ts_now - ts_prev）：
 
