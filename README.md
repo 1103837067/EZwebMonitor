@@ -21,7 +21,7 @@ window.__perfOverlay
 ``` javascript
 window.__EZwebMonitorBootstrap()
 ```
-🧠 API一览
+## 🧠 API一览
 | 方法                                | 功能说明                        |
 | --------------------------------- | --------------------------- |
 | `__perfOverlay.remove()`          | 移除浮层并清理所有事件/循环。             |
@@ -33,7 +33,7 @@ window.__EZwebMonitorBootstrap()
 | `__perfOverlay.stopAndDownload()` | 结束记录并导出 CSV 文件。             |
 | `__perfOverlay.getJankConfig()`   | 查看当前 jank 检测阈值（PerfDog 风格）。 |
 
-🧾 导出 CSV 字段
+## 🧾 导出 CSV 字段
 
 每条记录包含以下列：
 | 列名              | 说明             |
