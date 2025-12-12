@@ -8,7 +8,7 @@
 ## usage 使用方法
 在浏览器控制台输入以下命令
 ``` javascript
-import("https://cdn.jsdelivr.net/gh/1103837067/EZwebMonitor/index.js");
+import("https://cdn.jsdelivr.net/gh/SolidQA/EZwebMonitor/index.js");
 // 关闭UI后可使用下面命令重新打开UI面板，也可以一起粘贴，每次都会显示UI
 window.__EZwebMonitorBootstrap();
 ```
